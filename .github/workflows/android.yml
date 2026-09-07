@@ -46,7 +46,7 @@ jobs:
         with:
           # Skip emulator meta-package; debug assemble/unit tests only need
           # platform-tools, platforms, and build-tools.
-          packages: platform-tools platforms;android-37 build-tools;37.0.0
+          packages: platform-tools platforms;android-37.0 build-tools;37.0.0
 
       - name: Install Python test dependencies
         run: |
