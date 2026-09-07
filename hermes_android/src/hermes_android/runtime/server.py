@@ -1,0 +1,116 @@
+from __future__ import annotations
+
+import asyncio
+import threading
+from concurrent.futures import TimeoutError as FutureTimeoutError
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from hermes_android.python_path import prefer_hermes_package_root
+
+prefer_hermes_package_root()
+
+from gateway.config import PlatformConfig
+from gateway.platforms.api_server import APIServerAdapter
+from hermes_android.runtime.bootstrap import bootstrap_android_runtime
+from hermes_android.runtime.env import AndroidRuntimeEnv
+
+
+def _platform_config(runtime: AndroidRuntimeEnv) -> PlatformConfig:
+    from hermes_android.api.app import extra_route_registrar
+
+    return PlatformConfig(
+        enabled=True,
+        extra={
+            "host": runtime.api_server_host,
+            "port": runtime.api_server_port,
+            "key": runtime.api_server_key,
+            "model_name": runtime.api_server_model_name,
+            "cors_origins": [],
+            # Mount /v1/manage/* on the same aiohttp app.
+            "extra_route_registrar": extra_route_registrar(),
+        },
+    )
+
+ANDROID_API_SERVER_CONNECT_TIMEOUT_SECONDS = 90.0
+
+
+@dataclass
+class AndroidServerHandle:
+    runtime: AndroidRuntimeEnv
+    adapter: APIServerAdapter
+    loop: asyncio.AbstractEventLoop
+    thread: threading.Thread
+
+    @property
+    def base_url(self) -> str:
+        from hermes_android.runtime.env import loopback_base_url
+
+        return loopback_base_url(self.runtime.api_server_host, self.runtime.api_server_port)
+
+    def stop(self, timeout: float = 20.0) -> None:
+        async def _shutdown() -> None:
+            await self.adapter.disconnect()
+
+        future = asyncio.run_coroutine_threadsafe(_shutdown(), self.loop)
+        future.result(timeout=timeout)
+        self.loop.call_soon_threadsafe(self.loop.stop)
+        self.thread.join(timeout=timeout)
+
+
+def _build_runtime(runtime_payload: dict[str, Any]) -> AndroidRuntimeEnv:
+    return AndroidRuntimeEnv(
+        files_dir=Path(runtime_payload["files_dir"]),
+        hermes_home=Path(runtime_payload["hermes_home"]),
+        api_server_host=str(runtime_payload["api_server_host"]),
+        api_server_port=int(runtime_payload["api_server_port"]),
+        api_server_key=str(runtime_payload["api_server_key"]),
+        api_server_model_name=str(runtime_payload["api_server_model_name"]),
+    )
+
+
+def start_local_api_server(
+    files_dir: str,
+    *,
+    api_server_port: int | None = None,
+    api_server_key: str | None = None,
+    connect_timeout: float = ANDROID_API_SERVER_CONNECT_TIMEOUT_SECONDS,
+) -> AndroidServerHandle:
+    bootstrap = bootstrap_android_runtime(
+        files_dir,
+        api_server_port=api_server_port,
+        api_server_key=api_server_key,
+    )
+    runtime = _build_runtime(bootstrap["runtime"])
+    adapter = APIServerAdapter(_platform_config(runtime))
+
+    loop = asyncio.new_event_loop()
+
+    def _run_loop() -> None:
+        asyncio.set_event_loop(loop)
+        loop.run_forever()
+        loop.run_until_complete(loop.shutdown_asyncgens())
+        loop.close()
+
+    thread = threading.Thread(target=_run_loop, name="hermes-android-api-server", daemon=True)
+    thread.start()
+
+    future = asyncio.run_coroutine_threadsafe(adapter.connect(), loop)
+    try:
+        connected = future.result(timeout=connect_timeout)
+    except FutureTimeoutError as exc:
+        future.cancel()
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=min(connect_timeout, 5.0))
+        raise TimeoutError(
+            "Timed out starting the Android local API server after "
+            f"{connect_timeout:.0f} seconds. Free phone storage, retry Hermes, "
+            "or switch to a local LiteRT-LM backend with a completed model."
+        ) from exc
+    if not connected:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=min(connect_timeout, 5.0))
+        raise RuntimeError("Failed to start Android local API server")
+
+    return AndroidServerHandle(runtime=runtime, adapter=adapter, loop=loop, thread=thread)
