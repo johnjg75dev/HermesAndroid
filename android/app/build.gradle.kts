@@ -611,3 +611,123 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 }
+
+// ---------------------------------------------------------------------------
+// Remote build via GitHub Actions
+// ---------------------------------------------------------------------------
+// `./gradlew :app:assembleRemoteDebug` compiles the full APK on GitHub's
+// runners and downloads it into app/build/outputs/apk/debug — the same spot
+// a local `assembleDebug` would write to. No local Android SDK/Chaquopy/Linux
+// assets are consumed. Requires `git` and the `gh` CLI (authenticated).
+// ---------------------------------------------------------------------------
+
+fun runProcessCapture(cmd: List<String>): String {
+    val process = ProcessBuilder(cmd)
+        .redirectErrorStream(true)
+        .start()
+    val output = process.inputStream.bufferedReader().readText()
+    val exit = process.waitFor()
+    if (exit != 0) {
+        throw GradleException("Command failed (exit $exit): ${cmd.joinToString(" ")}\n$output")
+    }
+    return output.trim()
+}
+
+fun runProcessStream(cmd: List<String>) {
+    val process = ProcessBuilder(cmd)
+        .redirectOutput(ProcessBuilder.Redirect.INHERIT)
+        .redirectError(ProcessBuilder.Redirect.INHERIT)
+        .start()
+    val exit = process.waitFor()
+    if (exit != 0) {
+        throw GradleException("Command failed (exit $exit): ${cmd.joinToString(" ")}")
+    }
+}
+
+val assembleRemoteDebug = tasks.register("assembleRemoteDebug") {
+    group = "build"
+    description = "Build the full debug APK on GitHub Actions and download it (no local compilation)."
+    val remoteApkDir = layout.buildDirectory.dir("remote-apk")
+    val destApkDir = layout.buildDirectory.dir("outputs/apk/debug")
+
+    doLast {
+        val workflow = "Android"
+        val artifact = "hermes-agent-android-debug-apk"
+
+        // Preflight: gh must be present and logged in.
+        runCatching { runProcessCapture(listOf("gh", "auth", "status")) }.getOrElse {
+            throw GradleException("The 'gh' CLI is required (https://cli.github.com) and must be logged in: ${it.message}")
+        }
+
+        // Fail fast on a dirty tree so the cloud build matches exactly what is pushed.
+        // Use --untracked-files=no so untracked build outputs like dist/ don't trip the guard
+        // (and dist/ is now in .gitignore). Tracked changes still fail the build.
+        val dirty = runProcessCapture(listOf("git", "status", "--porcelain", "--untracked-files=no"))
+        if (dirty.isNotBlank()) {
+            throw GradleException(
+                "Working tree has uncommitted changes. Commit or stash them first so " +
+                    "GitHub Actions builds exactly what is pushed:\n$dirty",
+            )
+        }
+
+        val branch = runProcessCapture(listOf("git", "rev-parse", "--abbrev-ref", "HEAD"))
+        if (branch == "HEAD") {
+            throw GradleException(
+                "Detached HEAD detected — checkout a branch before running assembleRemoteDebug " +
+                    "(gh run list --branch HEAD will never match and git push origin HEAD is ambiguous).",
+            )
+        }
+        val sha = runProcessCapture(listOf("git", "rev-parse", "HEAD"))
+
+        logger.lifecycle("Remote assemble via GitHub Actions: workflow=$workflow, branch=$branch, sha=${sha.take(8)}")
+        logger.lifecycle("This task will push $branch to origin and trigger the $workflow workflow — ensure WIP commits are intended to be published.")
+        logger.lifecycle("Pushing $branch to origin…")
+        runProcessStream(listOf("git", "push", "origin", "HEAD"))
+
+        // Poll for the run that the push just registered (matched by head SHA).
+        var runId = ""
+        for (attempt in 1..60) {
+            Thread.sleep(5_000)
+            runId = runCatching {
+                runProcessCapture(
+                    listOf(
+                        "gh", "run", "list",
+                        "--branch", branch,
+                        "--limit", "100",
+                        "--json", "databaseId,headSha,name",
+                        "--jq", ".[] | select(.headSha==\"$sha\" and .name==\"$workflow\") | .databaseId",
+                    ),
+                )
+            }.getOrDefault("")
+            if (runId.isNotBlank()) break
+            logger.lifecycle("Waiting for the Android workflow run to register… ${attempt * 5}s")
+        }
+        if (runId.isBlank()) {
+            throw GradleException(
+                "No '$workflow' run registered for commit ${sha.take(8)} after pushing. " +
+                    "Is branch '$branch' in the workflow's push trigger list? " +
+                    "Checked 100 recent runs over ~5 minutes; check Actions tab for queue delays.",
+            )
+        }
+        logger.lifecycle("Watching run $runId (streams the cloud build log)…")
+        runProcessStream(listOf("gh", "run", "watch", runId, "--exit-status", "--interval", "15"))
+
+        // Download + extract the artifact into the same path assembleDebug uses.
+        val downloadDir = remoteApkDir.get().asFile
+        downloadDir.deleteRecursively()
+        downloadDir.mkdirs()
+        runProcessStream(listOf("gh", "run", "download", runId, "--name", artifact, "--dir", downloadDir.absolutePath))
+
+        val apk = downloadDir.walkTopDown().firstOrNull { it.name == "app-debug.apk" }
+            ?: throw GradleException("Artifact '$artifact' contained no app-debug.apk file (found: ${downloadDir.walkTopDown().filter { it.extension == "apk" }.map { it.name }.toList()})")
+
+        val outDir = destApkDir.get().asFile
+        outDir.mkdirs()
+        val target = outDir.resolve("app-debug.apk")
+        apk.copyTo(target, overwrite = true)
+
+        logger.lifecycle("")
+        logger.lifecycle("Remote debug APK ready: ${target.absolutePath} (${target.length() / 1024 / 1024} MB)")
+        logger.lifecycle("Install with: adb install \"${target.absolutePath}\"")
+    }
+}

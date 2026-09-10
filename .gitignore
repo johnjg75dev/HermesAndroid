@@ -94,3 +94,4 @@ android/.gradle-home/
 android/release-evidence/**/*.perfetto-trace
 android/*.log
 android/release-evidence/**/performance/
+dist/
