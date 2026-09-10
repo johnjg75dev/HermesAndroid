@@ -555,7 +555,7 @@ afterEvaluate {
 }
 
 dependencies {
-    val composeBom = platform("androidx.compose:compose-bom:2024.12.01")
+    val composeBom = platform("androidx.compose:compose-bom:2026.09.00")
 
     implementation("androidx.core:core-ktx:1.19.0")
     implementation("dev.rikka.shizuku:api:13.1.5")
@@ -571,20 +571,21 @@ dependencies {
     implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
-    implementation("androidx.documentfile:documentfile:1.0.1")
+    implementation("androidx.documentfile:documentfile:1.1.0")
     implementation("com.squareup.okhttp3:okhttp:5.5.0")
     implementation("com.squareup.okhttp3:okhttp-sse:5.5.0")
-    implementation("org.apache.commons:commons-compress:1.26.2")
-    implementation("org.tukaani:xz:1.9")
+    implementation("org.apache.commons:commons-compress:1.28.0")
+    implementation("org.tukaani:xz:1.12")
     implementation("androidx.security:security-crypto:1.1.0")
     implementation("androidx.profileinstaller:profileinstaller:1.4.1")
-    implementation("androidx.datastore:datastore-preferences:1.1.7")
-    implementation("org.json:json:20240303")
+    implementation("androidx.datastore:datastore-preferences:1.2.1")
+    implementation("org.json:json:20260814")
     // Hilt
     implementation("com.google.dagger:hilt-android:2.60.1")
     ksp("com.google.dagger:hilt-compiler:2.60.1")
     implementation("androidx.hilt:hilt-navigation-compose:1.4.0")
     implementation("androidx.hilt:hilt-work:1.4.0")
+    implementation("androidx.work:work-runtime-ktx:2.11.2")
     // Release/F-Droid builds use the exact stable default (0.16.0). Developers can compile
     // an upstream preview version or a locally built LiteRT-LM main-branch AAR
     // without weakening the reproducible release pin.
@@ -601,7 +602,7 @@ dependencies {
     testImplementation("org.json:json:20240303")
     testImplementation("com.google.dagger:hilt-android-testing:2.60.1")
     kspTest("com.google.dagger:hilt-compiler:2.60.1")
-    androidTestImplementation("androidx.test:core-ktx:1.6.1")
+    androidTestImplementation("androidx.test:core-ktx:1.7.0")
     androidTestImplementation("androidx.test.ext:junit:1.3.0")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.7.0")
     androidTestImplementation("androidx.test.espresso:espresso-intents:3.7.0")
